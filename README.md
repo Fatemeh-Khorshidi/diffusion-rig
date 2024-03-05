@@ -110,7 +110,7 @@ It takes around 30 minutes on a single Nvidia V100 GPU.
 We provide a script to edit face appearance by modifying the physical buffers. Run:
 
 ```bash
-python scripts/inference.py --source SOURCE_IMAGE_FILE --target TARGET_IMAGE_FILE --output_dir OUTPUT_DIR --modes light --model_path PATH_TO_MODEL --meanshape PATH_TO_MEANSHAPE --timestep_respacing ddim20 
+python scripts/inference.py 
 ```
 
 to use the physical parameters (e.g., lighting, expression, or head pose) of the target image to edit the source image.
