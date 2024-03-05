@@ -50,7 +50,7 @@ def main():
         with open(os.path.join(output_dir, "mean_shape.pkl"), "wb") as f:
             pickle.dump(mean_shape, f)
 
-    with lmdb.open(output_dir, map_size=1024**4, readahead=False) as env:
+    with lmdb.open(output_dir, map_size=512*1024**3, readahead=False) as env:
 
         total = 0
         for batch_id, data in enumerate(tqdm(loader)):

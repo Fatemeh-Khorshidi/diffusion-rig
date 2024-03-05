@@ -24,22 +24,9 @@ from decalib.datasets import datasets as deca_dataset
 import pickle
 
 
-def create_inter_data(dataset, modes, meanshape_path=""):
+def create_inter_data(deca,dataset, modes, meanshape):
 
-    # Build DECA
-    deca_cfg.model.use_tex = True
-    deca_cfg.model.tex_path = "data/FLAME_texture.npz"
-    deca_cfg.model.tex_type = "FLAME"
-    deca_cfg.rasterizer_type = "pytorch3d"
-    deca = DECA(config=deca_cfg)
 
-    meanshape = None
-    if os.path.exists(meanshape_path):
-        print("use meanshape: ", meanshape_path)
-        with open(meanshape_path, "rb") as f:
-            meanshape = pickle.load(f)
-    else:
-        print("not use meanshape")
 
     img2 = dataset[-1]["image"].unsqueeze(0).to("cuda")
     with th.no_grad():
@@ -107,8 +94,26 @@ def create_inter_data(dataset, modes, meanshape_path=""):
 
 def main():
     args = create_argparser().parse_args()
+    args.model_path = "log/elon_musk/model005000.pt"
+    args.meanshape = 'D:/diffusion-rig/personal_deca.lmdb/mean_shape.pkl'
+    args.timestep_respacing = "ddim20"
+    args.modes = 'exp'
+    # ---------DECA________
+    # Build DECA
+    deca_cfg.model.use_tex = True
+    deca_cfg.model.tex_path = "data/FLAME_texture.npz"
+    deca_cfg.model.tex_type = "FLAME"
+    deca_cfg.rasterizer_type = "pytorch3d"
+    deca = DECA(config=deca_cfg)
 
-    print("creating model and diffusion...")
+    meanshape = None
+    # if os.path.exists(args.meanshape):
+    #     print("use meanshape: ", args.meanshape)
+    #     with open(args.meanshape, "rb") as f:
+    #         meanshape = pickle.load(f)
+    # else:
+    #     print("not use meanshape")
+    # -----------model-----
     model, diffusion = create_model_and_diffusion(
         **args_to_dict(args, model_and_diffusion_defaults().keys())
     )
@@ -118,70 +123,91 @@ def main():
     model.load_state_dict(ckpt)
     model.to("cuda")
     model.eval()
+    # List and sort source and target images
+    source_images = sorted([f for f in os.listdir('source') if f.endswith(('.png', '.jpg', '.bmp'))])
+    print(source_images)
+    target_images = sorted([f for f in os.listdir('tailor_sweft') if f.endswith(('.png', '.jpg', '.bmp'))])
+    print(target_images)
 
-    imagepath_list = []
-
-    if not os.path.exists(args.source) or not os.path.exists(args.target):
-        print("source file or target file doesn't exists.")
-        return
-
-    imagepath_list = []
-    if os.path.isdir(args.source):
-        imagepath_list += (
-            glob(args.source + "/*.jpg")
-            + glob(args.source + "/*.png")
-            + glob(args.source + "/*.bmp")
-        )
-    else:
-        imagepath_list += [args.source]
-    imagepath_list += [args.target]
-    dataset = deca_dataset.TestData(imagepath_list, iscrop=True, size=args.image_size)
-
-    modes = args.modes.split(",")
-
-    data = create_inter_data(dataset, modes, args.meanshape)
-
-    sample_fn = (
-        diffusion.p_sample_loop if not args.use_ddim else diffusion.ddim_sample_loop
-    )
-
+    args.output_dir='./'
     os.system("mkdir -p " + args.output_dir)
 
-    noise = th.randn(1, 3, args.image_size, args.image_size).to("cuda")
+    # constant_noise = th.randn(1, 3, args.image_size, args.image_size).to("cuda")
+    # print(constant_noise)
 
     vis_dir = args.output_dir
+    print("creating model and diffusion...")
+    for idx,(source_image,target_image) in enumerate(zip(source_images,target_images)):
+        args.target = f'tailor_sweft/GettyImages-1637208780-e1696959760879.jpg'
+        args.source = f'source/Elon-Musk.jpg'
+        print(args.source)
 
-    idx = 0
-    for batch in data:
-        image = batch["image"]
-        image2 = batch["image2"]
-        rendered, normal, albedo = batch["rendered"], batch["normal"], batch["albedo"]
 
-        physic_cond = th.cat([rendered, normal, albedo], dim=1)
+        imagepath_list = []
 
-        image = image
-        physic_cond = physic_cond
+        if not os.path.exists(args.source) or not os.path.exists(args.target):
+            print("source file or target file doesn't exists.")
+            return
 
-        with th.no_grad():
-            if batch["mode"] == "latent":
-                detail_cond = model.encode_cond(image2)
-            else:
-                detail_cond = model.encode_cond(image)
+        imagepath_list = []
+        if os.path.isdir(args.source):
+            imagepath_list += (
+                glob(args.source + "/*.jpg")
+                + glob(args.source + "/*.png")
+                + glob(args.source + "/*.bmp")
+            )
+        else:
+            imagepath_list += [args.source]
 
-        sample = sample_fn(
-            model,
-            (1, 3, args.image_size, args.image_size),
-            noise=noise,
-            clip_denoised=args.clip_denoised,
-            model_kwargs={"physic_cond": physic_cond, "detail_cond": detail_cond},
+        imagepath_list += [args.target]
+        dataset = deca_dataset.TestData(imagepath_list, iscrop=True, size=args.image_size)
+
+        modes = args.modes.split(",")
+
+        data = create_inter_data(deca, dataset, modes, meanshape)
+        print("_________$____,args.use_ddim",args.use_ddim)
+        sample_fn = (
+            diffusion.p_sample_loop if not args.use_ddim else diffusion.ddim_sample_loop
         )
-        sample = (sample + 1) / 2.0
-        sample = sample.contiguous()
 
-        save_image(
-            sample, os.path.join(vis_dir, "{}_".format(idx) + batch["mode"]) + ".png"
-        )
-        idx += 1
+
+        # noise = th.randn(1, 3, args.image_size, args.image_size).to("cuda")
+        noise = th.zeros(1, 3, args.image_size, args.image_size).fill_(-0.1).to("cuda")
+
+
+
+
+        idx = 0
+        for batch in data:
+            image = batch["image"]
+            image2 = batch["image2"]
+            rendered, normal, albedo = batch["rendered"], batch["normal"], batch["albedo"]
+
+            physic_cond = th.cat([rendered, normal, albedo], dim=1)
+
+            image = image
+            physic_cond = physic_cond
+
+            with th.no_grad():
+                if batch["mode"] == "latent":
+                    detail_cond = model.encode_cond(image2)
+                else:
+                    detail_cond = model.encode_cond(image)
+
+            sample = sample_fn(
+                model,
+                (1, 3, args.image_size, args.image_size),
+                noise=noise,
+                clip_denoised=args.clip_denoised,
+                model_kwargs={"physic_cond": physic_cond, "detail_cond": detail_cond},
+            )
+            sample = (sample + 1) / 2.0
+            sample = sample.contiguous()
+
+            save_image(
+                sample, f"{args.output_dir}/{source_image}"
+            )
+            idx += 1
 
 
 def create_argparser():

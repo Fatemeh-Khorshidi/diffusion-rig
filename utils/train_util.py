@@ -1,40 +1,30 @@
-import copy
-import functools
-import os
-from utils import dist_util
-
-import blobfile as bf
-import torch as th
-import torch.distributed as dist
-from torch.nn.parallel.distributed import DistributedDataParallel as DDP
+import torch
 from torch.optim import Adam
-
-from . import logger
-from diffusion.resample import LossAwareSampler, UniformSampler
-
+from torch.cuda.amp import GradScaler, autocast
 import time
+import blobfile as bf
 import datetime
-
-from torch.cuda.amp import autocast, GradScaler
+import os
+from . import logger
 
 
 class TrainLoop:
     def __init__(
-        self,
-        *,
-        model,
-        diffusion,
-        data,
-        batch_size,
-        lr,
-        log_interval,
-        save_interval,
-        resume_checkpoint,
-        schedule_sampler=None,
-        weight_decay=0.0,
-        stage=1,
-        max_steps=0,
-        auto_scale_grad_clip=1.0,
+            self,
+            *,
+            model,
+            diffusion,
+            data,
+            batch_size,
+            lr,
+            log_interval,
+            save_interval,
+            resume_checkpoint,
+            schedule_sampler=None,
+            weight_decay=0.0,
+            stage=1,
+            max_steps=0,
+            auto_scale_grad_clip=1.0,
     ):
         self.model = model
         self.diffusion = diffusion
@@ -48,14 +38,13 @@ class TrainLoop:
         self.log_interval = log_interval
         self.save_interval = save_interval
         self.resume_checkpoint = resume_checkpoint
-        self.schedule_sampler = schedule_sampler or UniformSampler(diffusion)
+        self.schedule_sampler = schedule_sampler
         self.weight_decay = weight_decay
 
+        self.global_batch = self.batch_size
         self.step = 0
         self.resume_step = 0
-        self.global_batch = self.batch_size * dist.get_world_size()
-
-        self.sync_cuda = th.cuda.is_available()
+        self.sync_cuda = torch.cuda.is_available()
 
         self._load_and_sync_parameters()
 
@@ -66,7 +55,7 @@ class TrainLoop:
 
         self.opt = Adam(
             self.model.parameters(),
-            lr=self.lr, 
+            lr=self.lr,
             weight_decay=self.weight_decay
         )
 
@@ -75,25 +64,8 @@ class TrainLoop:
         if self.resume_step:
             self._load_optimizer_state()
 
-        if th.cuda.is_available():
-            self.use_ddp = True
-            self.ddp_model = DDP(
-                self.model,
-                device_ids=[dist_util.dev()],
-                output_device=dist_util.dev(),
-                broadcast_buffers=False,
-                bucket_cap_mb=128,
-                find_unused_parameters=False,
-            )
-        else:
-            if dist.get_world_size() > 1:
-                logger.warn(
-                    "Distributed training requires CUDA. "
-                    "Gradients will not be synchronized properly!"
-                )
-            self.use_ddp = False
-            self.ddp_model = self.model
-
+        if torch.cuda.is_available():
+            self.model.cuda()
 
         self.start_time = time.time()
         self.step_time = 0
@@ -106,13 +78,11 @@ class TrainLoop:
             if self.stage == 1:
                 self.resume_step = parse_resume_step_from_filename(resume_checkpoint)
             logger.log(f"loading model from checkpoint: {resume_checkpoint}...")
-            ckpt = dist_util.load_state_dict(
-                        resume_checkpoint, map_location=dist_util.dev()
-                    )
-
+            ckpt = torch.load(resume_checkpoint,
+                              map_location=lambda storage, loc: storage)  # Adjusted for single-GPU use
             self.model.load_state_dict(ckpt)
 
-        dist_util.sync_params(self.model.parameters())
+        # self.sync_params(self.model.parameters())
 
     def _load_optimizer_state(self):
         main_checkpoint = find_resume_checkpoint() or self.resume_checkpoint
@@ -128,14 +98,14 @@ class TrainLoop:
 
     def run_loop(self):
         while (
-            not self.max_steps or
-            self.step + self.resume_step < self.max_steps
+                not self.max_steps or
+                self.step + self.resume_step < self.max_steps
         ):
             batch = next(self.data)
 
             image = batch['image']
             rendered, normal, albedo = batch['rendered'], batch['normal'], batch['albedo']
-            physic_cond = th.cat([rendered, normal, albedo], dim=1)
+            physic_cond = torch.cat([rendered, normal, albedo], dim=1)
 
             self.run_step(image, physic_cond)
 
@@ -158,7 +128,7 @@ class TrainLoop:
         self.forward_backward(image, physic_cond)
 
         self.scaler.unscale_(self.opt)
-        th.nn.utils.clip_grad_norm_(self.ddp_model.parameters(), self.auto_scale_grad_clip)
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.auto_scale_grad_clip)
         self.scaler.step(self.opt)
         self.scaler.update()
 
@@ -166,33 +136,25 @@ class TrainLoop:
 
     def forward_backward(self, image, physic_cond):
         self.opt.zero_grad()
+        image = image.cuda()
+        physic_cond = physic_cond.cuda()
 
-        image = image.to(dist_util.dev())
-        physic_cond = physic_cond.to(dist_util.dev())
+        t, weights = self.schedule_sampler.sample(image.shape[0], image.device)
 
-        t, weights = self.schedule_sampler.sample(image.shape[0], dist_util.dev())
-
-        compute_losses = functools.partial(
-            self.diffusion.training_losses,
-            self.ddp_model,
+        compute_losses = lambda: self.diffusion.training_losses(
+            self.model,
             image,
             t,
             model_kwargs={'physic_cond': physic_cond, 'x_start': image},
         )
 
         with autocast():
-            # with self.ddp_model.no_sync():
             losses = compute_losses()
-            if isinstance(self.schedule_sampler, LossAwareSampler):
-                self.schedule_sampler.update_with_local_losses(
-                    t, losses["loss"].detach()
-                )
             loss = (losses["loss"] * weights).mean()
 
         log_loss_dict(
             self.diffusion, t, {k: v * weights for k, v in losses.items()}
         )
-
 
         self.scaler.scale(loss).backward()
 
@@ -207,34 +169,32 @@ class TrainLoop:
         else:
             self.step_time = 0.1 * self.step_time + 0.9 * (ct - self.last_step_time)
             self.last_step_time = ct
-        logger.logkv("time est.(10k)", str(datetime.timedelta(seconds=10000 * self.step_time)) )
-        
+        logger.logkv("time est.(10k)", str(datetime.timedelta(seconds=10000 * self.step_time)))
+
         steps_to_go = (self.save_interval - self.step - self.resume_step) % self.save_interval
         logger.logkv("time est.(next ckpt)", str(datetime.timedelta(seconds=steps_to_go * self.step_time)))
 
     def save(self):
         def save_checkpoint(rate, params=None):
-
             state_dict = self.model.state_dict()
-            
-            if dist.get_rank() == 0:
-                # state_dict = self.model.state_dict()
-                logger.log(f"saving model {rate}...")
-                if not rate:
-                    filename = f"model{(self.step+self.resume_step):06d}.pt"
-                with bf.BlobFile(bf.join(get_blob_logdir(), filename), "wb") as f:
-                    th.save(state_dict, f)
+
+            # state_dict = self.model.state_dict()
+            logger.log(f"saving model {rate}...")
+            if not rate:
+                filename = f"model{(self.step + self.resume_step):06d}.pt"
+            with bf.BlobFile(bf.join(get_blob_logdir(), filename), "wb") as f:
+                torch.save(state_dict, f)
 
         save_checkpoint(0)
 
-        if dist.get_rank() == 0 and self.stage == 1:
-            with bf.BlobFile(
-                bf.join(get_blob_logdir(), f"opt{(self.step+self.resume_step):06d}.pt"),
-                "wb",
-            ) as f:
-                th.save(self.opt.state_dict(), f)
-
-        dist.barrier()
+        # if dist.get_rank() == 0 and self.stage == 1:
+        #     with bf.BlobFile(
+        #         bf.join(get_blob_logdir(), f"opt{(self.step+self.resume_step):06d}.pt"),
+        #         "wb",
+        #     ) as f:
+        #         torch.save(self.opt.state_dict(), f)
+        #
+        # dist.barrier()
 
 
 def parse_resume_step_from_filename(filename):
@@ -262,6 +222,7 @@ def find_resume_checkpoint():
     # On your infrastructure, you may want to override this to automatically
     # discover the latest checkpoint on your blob storage, etc.
     return None
+
 
 def log_loss_dict(diffusion, ts, losses):
     # logger.logkv_mean('loss', losses['loss'].mean().item())

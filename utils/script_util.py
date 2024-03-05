@@ -79,7 +79,7 @@ def create_model_and_diffusion(
     p2_k,
 ):
 
-    model = DiffusionRig(        
+    model = DiffusionRig(
         image_size,
         learn_sigma,
         num_channels,

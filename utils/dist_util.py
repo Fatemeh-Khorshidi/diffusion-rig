@@ -1,7 +1,7 @@
 """
 Helpers for distributed training.
 """
-
+from . import logger
 import io
 import os
 import socket
@@ -25,23 +25,26 @@ def setup_dist():
     if dist.is_initialized():
         return
 
-    rank = MPI.COMM_WORLD.Get_rank() % GPUS_PER_NODE
-    th.cuda.set_device(rank)
+    # rank = MPI.COMM_WORLD.Get_rank() % GPUS_PER_NODE
+    # th.cuda.set_device(rank)
 
-    comm = MPI.COMM_WORLD
-    backend = "gloo" if not th.cuda.is_available() else "nccl"
+    # comm = MPI.COMM_WORLD
+    # print(th.cuda.is_available())
+    # backend = "gloo" if not th.cuda.is_available() else "nccl"
 
-    if backend == "gloo":
-        hostname = "localhost"
-    else:
-        hostname = socket.gethostbyname(socket.getfqdn())
-    os.environ["MASTER_ADDR"] = comm.bcast(hostname, root=0)
-    os.environ["RANK"] = str(comm.rank)
-    os.environ["WORLD_SIZE"] = str(comm.size)
+    # if backend == "gloo":
+    #     hostname = "localhost"
+    # else:
+    #     hostname = socket.gethostbyname(socket.getfqdn())
+    # os.environ["MASTER_ADDR"] = comm.bcast(hostname, root=0)
+    # os.environ["RANK"] = str(comm.rank)
+    # os.environ["WORLD_SIZE"] = str(comm.size)
 
-    port = comm.bcast(_find_free_port(), root=0)
-    os.environ["MASTER_PORT"] = str(port)
-    dist.init_process_group(backend=backend, init_method="env://")
+    # port = comm.bcast(_find_free_port(), root=0)
+    # os.environ["MASTER_PORT"] = str(port)
+    # dist.init_process_group(backend=backend, init_method="env://")
+    if th.cuda.is_available():
+        th.cuda.set_device(0)
 
 
 def dev():

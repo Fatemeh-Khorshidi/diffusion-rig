@@ -156,7 +156,10 @@ class GaussianDiffusion:
         self.sqrt_recip_alphas_cumprod = np.sqrt(1.0 / self.alphas_cumprod)
         self.sqrt_recipm1_alphas_cumprod = np.sqrt(1.0 / self.alphas_cumprod - 1)
 
-        # calculations for posterior q(x_{t-1} | x_t, x_0)
+        # calculations for.
+
+
+
         self.posterior_variance = (
             betas * (1.0 - self.alphas_cumprod_prev) / (1.0 - self.alphas_cumprod)
         )
@@ -210,6 +213,7 @@ class GaussianDiffusion:
         if noise is None:
             noise = th.randn_like(x_start)
         assert noise.shape == x_start.shape
+        # print("________q sample noise:", noise)
         alpha_t = _extract_into_tensor(self.sqrt_alphas_cumprod, t, x_start.shape)
         sigma_t = _extract_into_tensor(
             self.sqrt_one_minus_alphas_cumprod, t, x_start.shape
@@ -446,6 +450,7 @@ class GaussianDiffusion:
             model_kwargs=model_kwargs,
         )
         noise = th.randn_like(x)
+        # print("_____p-sample-noise", noise)
         nonzero_mask = (
             (t != 0).float().view(-1, *([1] * (len(x.shape) - 1)))
         )  # no noise when t == 0
@@ -592,6 +597,7 @@ class GaussianDiffusion:
         )
         # Equation 12.
         noise = th.randn_like(x)
+        # print("_____ddim_sample", noise)
         mean_pred = (
             out["pred_xstart"] * th.sqrt(alpha_bar_prev)
             + th.sqrt(1 - alpha_bar_prev - sigma**2) * eps
@@ -825,6 +831,8 @@ class GaussianDiffusion:
             model_kwargs = {}
         if noise is None:
             noise = th.randn_like(x_start)
+
+
 
         x_t = self.q_sample(x_start, t, noise=noise)
 

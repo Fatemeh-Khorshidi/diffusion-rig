@@ -773,7 +773,7 @@ def create_model(
     num_channels,
     num_res_blocks,
     channel_mult="",
-    learn_sigma=False,
+    learn_sigma=True,
     use_checkpoint=False,
     attention_resolutions="16",
     num_heads=1,
