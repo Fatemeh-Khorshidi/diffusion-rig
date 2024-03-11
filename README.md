@@ -8,6 +8,7 @@
 [arXiv](https://arxiv.org/pdf/2304.06711.pdf) / [Project Page](https://diffusionrig.github.io) / [Video](https://www.youtube.com/watch?v=6ZQbiNiJJEE) / [BibTex](bib.txt)
 
 ![teaser](figs/teaser.webp)
+In this project, we tackled the challenge of adapting the main code, initially designed for distributed GPUs, to function efficiently on a single GPU. This not only showcased the versatility of the Diffusion Rig but also made its powerful capabilities more accessible. additionally insert constant noise to diffusion model in inference part, this allow us to generate sequense images with high performance.
 
 ## Setup & Preparation
 
